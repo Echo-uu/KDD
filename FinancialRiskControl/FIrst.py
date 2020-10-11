@@ -7,20 +7,19 @@ import csv
 from tqdm import tqdm
 from scipy.stats import pearsonr
 from sklearn.preprocessing import LabelEncoder
-from sklearn.feature_selection import SelectKBest
-from sklearn.feature_selection import chi2, VarianceThreshold
+from sklearn.feature_selection import chi2, VarianceThreshold, SelectKBest
 from sklearn.preprocessing import MinMaxScaler
 import xgboost as xgb
+from xgboost import XGBClassifier
 import lightgbm as lgb
 from catboost import CatBoostRegressor
 import warnings
 from sklearn.model_selection import StratifiedKFold, KFold
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score, log_loss
-
 warnings.filterwarnings('ignore')
 
-data_train =pd.read_csv('train.csv')
-data_test_a = pd.read_csv('testA.csv')
+data_train =pd.read_csv('F:/data/FinancialRiskControl/train.csv')
+data_test_a = pd.read_csv('F:/data/FinancialRiskControl/testA.csv')
 
 #numerical_fea = list(data_train.select_dtypes(exclude = ['object']).columns)
 #nonumerical_fea = list(filter(lambda x: x not in numerical_fea, list(data_train.columns)))
@@ -46,8 +45,18 @@ x_train = data_train[features]
 x_test = data_test_a[features]
 y_train = data_train['isDefault']
 
-print(x_train.info())
-print(x_test.info())
+# print(x_train.info())
+# print(x_test.info())
+
+
+def testSpilt():
+    kf = KFold(n_splits = 5, shuffle = True, random_state = 2020)
+    for i, (train_index, valid_index) in enumerate(kf.split(x_train, y_train)):
+        print("index: ", i)
+        print('train_index: ', train_index)
+        print('valid_index: ', valid_index)
+
+#testSpilt()
 
 def cv_model(clf, train_x, train_y, test_x, clf_name):
     folds = 5
@@ -61,11 +70,17 @@ def cv_model(clf, train_x, train_y, test_x, clf_name):
 
     for i, (train_index, valid_index) in enumerate(kf.split(train_x, train_y)):
         print('************************************ {} ************************************'.format(str(i+1)))
-        trn_x, trn_y, val_x, val_y = train_x.iloc[train_index], train_y[train_index], train_x.iloc[valid_index], train_y[valid_index]
+        trn_x, trn_y, val_x, val_y = train_x.iloc[train_index],\
+                 train_y[train_index], train_x.iloc[valid_index], train_y[valid_index]
+
+        # print(trn_x, trn_y)
 
         if clf_name == "lgb":
             train_matrix = clf.Dataset(trn_x, label=trn_y)
             valid_matrix = clf.Dataset(val_x, label=val_y)
+            
+            # print(train_matrix)
+            # print(valid_matrix)
 
             params = {
                 'boosting_type': 'gbdt',
@@ -79,11 +94,14 @@ def cv_model(clf, train_x, train_y, test_x, clf_name):
                 'bagging_freq': 4,
                 'learning_rate': 0.1,
                 'seed': 2020,
-                'n_jobs':28,
+                'n_jobs':-1,
                 'verbose': -1,
             }
-
-            model = clf.train(params, train_matrix, num_boost_round = 50000, valid_sets=[train_matrix, valid_matrix], verbose_eval=200,early_stopping_rounds=200)
+            
+            model = clf.train(params, train_matrix, num_boost_round = 50000, \
+                valid_sets=[train_matrix, valid_matrix], verbose_eval=200,\
+                    early_stopping_rounds=200)
+            #model1 = clf.fit(trn_x,trn_y,params)
             val_pred = model.predict(val_x, num_iteration=model.best_iteration)
             test_pred = model.predict(test_x, num_iteration=model.best_iteration)
             
@@ -99,22 +117,24 @@ def cv_model(clf, train_x, train_y, test_x, clf_name):
                       'gamma': 1,
                       'min_child_weight': 1.5,
                       'max_depth': 5,
-                      'lambda': 10,
-                      'subsample': 0.7,
-                      'colsample_bytree': 0.7,
-                      'colsample_bylevel': 0.7,
-                      'eta': 0.04,
+                      'lambda': 10, #权重的L2正则化项
+                      'subsample': 0.7, #每棵树，随机采样的比例
+                      'colsample_bytree': 0.7, #每棵随机采样树的列数的占比
+                      'colsample_bylevel': 0.7, #控制树的每一级的每一次分裂，对列数的采样的占比
+                      'eta': 0.04,  #learning rate
                       'tree_method': 'exact',
                       'seed': 2020,
                       'nthread': 36,
-                      "silent": True,
+                      'silent': 1,
                       }
             
             watchlist = [(train_matrix, 'train'),(valid_matrix, 'eval')]
             
             model = clf.train(params, train_matrix, num_boost_round=50000, evals=watchlist, verbose_eval=200, early_stopping_rounds=200)
-            val_pred  = model.predict(valid_matrix, ntree_limit=model.best_ntree_limit)
-            test_pred = model.predict(test_x , ntree_limit=model.best_ntree_limit)
+            #model = XGBClassifier()
+            #model.fit(trn_x, trn_y)
+            val_pred  = model.predict(xgb.DMatrix(val_x), ntree_limit=model.best_ntree_limit)
+            test_pred = model.predict(xgb.DMatrix(test_x), ntree_limit=model.best_ntree_limit)
                  
         if clf_name == "cat":
             params = {'learning_rate': 0.05, 'depth': 5, 'l2_leaf_reg': 10, 'bootstrap_type': 'Bernoulli',
@@ -131,9 +151,9 @@ def cv_model(clf, train_x, train_y, test_x, clf_name):
         test = test_pred / kf.n_splits
         cv_scores.append(roc_auc_score(val_y, val_pred))
         
-        print(cv_scores)
+        #print(cv_scores)
         
-    print("%s_scotrainre_list:" % clf_name, cv_scores)
+    print("%s_score_train_list:" % clf_name, cv_scores)
     print("%s_score_mean:" % clf_name, np.mean(cv_scores))
     print("%s_score_std:" % clf_name, np.std(cv_scores))
     return train, test
@@ -150,17 +170,20 @@ def cat_model(x_train, y_train, x_test):
     cat_train, cat_test = cv_model(CatBoostRegressor, x_train, y_train, x_test, "cat")
 
 
-lgb_train, lgb_test = lgb_model(x_train, y_train, x_test)
+#lgb_train, lgb_test = lgb_model(x_train, y_train, x_test)
+xgb_train, xgb_test = xgb_model(x_train, y_train, x_test)
+#cat_train, cat_test = cat_model(x_train, y_train, x_test)
 
+# print('lgb_train:\n',lgb_train, lgb_train.size)
+# print('\n\nlgb_test:\n',lgb_test, lgb_train.size)
 
-print('lgb_train:\n',lgb_train, lgb_train.size)
-print('\n\nlgb_test:\n',lgb_test, lgb_train.size)
+def printToFile():
+    with open("answer.csv", "w", newline='') as csvfile:
+        writer = csv.writer(csvfile, dialect='excel')
+        writer.writerows(zip(xgb_test))
 
-with open("answer.csv", "w", newline='') as csvfile:
-    writer = csv.writer(csvfile, dialect='excel')
-    writer.writerows(zip(lgb_test))
+    # with open("train answer.csv", "w", newline='') as csvfile:
+    #     writer = csv.writer(csvfile, dialect='excel')
+    #     writer.writerows(zip(clf+'_train'))
 
-with open("train answer.csv", "w", newline='') as csvfile:
-    writer = csv.writer(csvfile, dialect='excel')
-    writer.writerows(zip(lgb_train))
-
+printToFile()
